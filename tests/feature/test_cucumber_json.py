@@ -237,3 +237,45 @@ def test_step_trace(pytester):
     ]
 
     assert jsonobject == expected
+
+
+def test_step_trace_pytest_fail(pytester):
+    """Test that a step failing via pytest.fail() is correctly captured in the JSON output."""
+    pytester.makefile(
+        ".feature",
+        test=textwrap.dedent(
+            """
+    Feature: Failing via pytest.fail
+        Scenario: Failing with pytest.fail
+            Given a passing step
+            And a step that calls pytest.fail
+    """
+        ),
+    )
+    pytester.makepyfile(
+        textwrap.dedent(
+            """
+        import pytest
+        from pytest_bdd import given, scenario
+
+        @given('a passing step')
+        def _():
+            pass
+
+        @given('a step that calls pytest.fail')
+        def _():
+            pytest.fail('deliberate failure')
+
+        @scenario('test.feature', 'Failing with pytest.fail')
+        def test_failing():
+            pass
+    """
+        )
+    )
+    result, jsonobject = runandparse(pytester)
+    result.assert_outcomes(failed=1)
+
+    steps = jsonobject[0]["elements"][0]["steps"]
+    assert steps[0]["result"]["status"] == "passed"
+    assert steps[1]["result"]["status"] == "failed"
+    assert "deliberate failure" in steps[1]["result"]["error_message"]
