@@ -115,13 +115,13 @@ class LogBDDCucumberJSON:
         """
         status: Literal["passed", "failed", "skipped"]
         res_message = None
-        if report.outcome == "passed" or not step["failed"]:  # ignore setup/teardown
+        if report.outcome == "skipped":
+            status = "skipped"
+        elif report.outcome == "passed" or not step["failed"]:  # ignore setup/teardown
             status = "passed"
         elif report.outcome == "failed":
             status = "failed"
             res_message = str(report.longrepr) if error_message else ""
-        elif report.outcome == "skipped":
-            status = "skipped"
         else:
             raise ValueError(f"Unknown test outcome {report.outcome}")
         res: ResultElementDict = {"status": status, "duration": int(math.floor((10**9) * step["duration"]))}  # nanosec
@@ -150,8 +150,15 @@ class LogBDDCucumberJSON:
             # skip reporting for non-bdd tests
             return
 
-        if not scenario["steps"] or report.when != "call":
-            # skip if there isn't a result or scenario has no steps
+        if not scenario["steps"]:
+            # skip if the scenario has no steps
+            return
+
+        # Normally a scenario is reported during the "call" phase. A scenario that is
+        # skipped before it runs (e.g. via a marker) never reaches the "call" phase and
+        # is instead reported as skipped during "setup"; emit that one too so skipped
+        # scenarios still appear in the output.
+        if report.when != "call" and not (report.when == "setup" and report.skipped):
             return
 
         def stepmap(step: StepReportDict) -> StepElementDict:

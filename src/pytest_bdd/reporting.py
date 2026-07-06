@@ -203,9 +203,48 @@ def runtest_makereport(item: Item, call: CallInfo, rep: TestReport) -> None:
     try:
         scenario_report: ScenarioReport = scenario_reports_registry[item]
     except KeyError:
+        # The scenario was never executed, so no report was collected during the run.
+        # This happens when the test is skipped before its body runs (e.g. via
+        # ``@pytest.mark.skip`` or a skip raised in a fixture). Build a report straight
+        # from the scenario template so that the skipped scenario still shows up in the
+        # output (e.g. cucumber json).
+        if rep.when != "setup" or not rep.skipped:
+            return
+        scenario = _make_skipped_scenario_report(item)
+        if scenario is None:
+            return
+        test_report_context_registry[rep] = ReportContext(scenario=scenario, name=item.name)
         return
 
     test_report_context_registry[rep] = ReportContext(scenario=scenario_report.serialize(), name=item.name)
+
+
+def _make_skipped_scenario_report(item: Item) -> ScenarioReportDict | None:
+    """Build a scenario report for a scenario that was skipped before it could run.
+
+    Returns ``None`` if the item is not a pytest-bdd scenario.
+    """
+    from .scenario import scenario_wrapper_template_registry
+
+    obj = getattr(item, "obj", None)
+    if obj is None:
+        return None
+    templated_scenario = scenario_wrapper_template_registry.get(obj)
+    if templated_scenario is None:
+        return None
+
+    example: dict[str, str] = {}
+    callspec = getattr(item, "callspec", None)
+    if callspec is not None:
+        example = callspec.params.get("_pytest_bdd_example", {})
+
+    scenario = templated_scenario.render(example)
+    report = ScenarioReport(scenario=scenario)
+    for step in scenario.steps:
+        # The steps were never executed; leave the reports unfinalized so they are
+        # serialized as not-failed with a zero duration.
+        report.add_step_report(StepReport(step=step))
+    return report.serialize()
 
 
 def before_scenario(request: FixtureRequest, feature: Feature, scenario: Scenario) -> None:

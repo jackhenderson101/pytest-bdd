@@ -325,3 +325,103 @@ def test_pytest_fail_in_fixture(pytester):
     assert steps[0]["result"]["status"] == "passed"
     assert steps[1]["result"]["status"] == "failed"
     assert "fixture failure" in steps[1]["result"]["error_message"]
+
+
+def test_skipped_scenarios(pytester):
+    """Skipped scenarios should still be reported in the cucumber json output.
+
+    Covers the three ways a scenario can be skipped: a ``@pytest.mark.skip`` marker,
+    a ``@skip`` tag in the feature file, and a skip raised from within a step.
+    """
+    pytester.makefile(
+        ".ini",
+        pytest=textwrap.dedent(
+            """
+    [pytest]
+    markers =
+        skip
+    """
+        ),
+    )
+    pytester.makefile(
+        ".feature",
+        test=textwrap.dedent(
+            """
+    Feature: Skipped scenarios
+
+        Scenario: Skipped by marker
+            Given a passing step
+
+        @skip
+        Scenario: Skipped by feature tag
+            Given a passing step
+
+        Scenario: Skipped inside a step
+            Given a skipping step
+
+        Scenario: Passing
+            Given a passing step
+    """
+        ),
+    )
+    pytester.makepyfile(
+        textwrap.dedent(
+            """
+        import pytest
+        from pytest_bdd import given, scenario
+
+        @given('a passing step')
+        def _():
+            return 'pass'
+
+        @given('a skipping step')
+        def _():
+            pytest.skip('skipping inside a step')
+
+        @pytest.mark.skip(reason="skipped by marker")
+        @scenario('test.feature', 'Skipped by marker')
+        def test_skipped_by_marker():
+            pass
+
+        @scenario('test.feature', 'Skipped by feature tag')
+        def test_skipped_by_feature_tag():
+            pass
+
+        @scenario('test.feature', 'Skipped inside a step')
+        def test_skipped_inside_step():
+            pass
+
+        @scenario('test.feature', 'Passing')
+        def test_passing():
+            pass
+    """
+        )
+    )
+    result, jsonobject = runandparse(pytester)
+    result.assert_outcomes(passed=1, skipped=3)
+
+    [feature] = jsonobject
+    elements = {element["name"]: element for element in feature["elements"]}
+
+    # All four scenarios, including the skipped ones, are present.
+    assert set(elements) == {
+        "Skipped by marker",
+        "Skipped by feature tag",
+        "Skipped inside a step",
+        "Passing",
+    }
+
+    assert elements["Skipped by marker"]["steps"] == [
+        {
+            "keyword": "Given",
+            "line": 4,
+            "match": {"location": ""},
+            "name": "a passing step",
+            # A scenario skipped before it runs reports its steps as skipped with a
+            # zero duration, since none of them were actually executed.
+            "result": {"status": "skipped", "duration": 0},
+        }
+    ]
+    assert elements["Skipped by feature tag"]["steps"][0]["result"]["status"] == "skipped"
+    assert elements["Skipped inside a step"]["steps"][0]["result"]["status"] == "skipped"
+    assert elements["Passing"]["steps"][0]["result"]["status"] == "passed"

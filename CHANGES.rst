@@ -34,6 +34,7 @@ Fixed
 * Backslashes in datatable and examples table cells are no longer over-quoted. A cell containing a single backslash now reaches the step as a single backslash, matching the Gherkin escaping rules. If you compensated by doubling backslashes in feature files, undo that. `#769 <https://github.com/pytest-dev/pytest-bdd/issues/769>`_
 * Made type annotations stronger and removed most of the ``typing.Any`` usages and ``# type: ignore`` annotations. `#658 <https://github.com/pytest-dev/pytest-bdd/pull/658>`_
 * Empty docstrings are now correctly forwarded to step functions as an empty string instead of being silently dropped, which previously caused pytest to report a missing ``docstring`` fixture. `#809 <https://github.com/pytest-dev/pytest-bdd/issues/809>`_
+* Skipped scenarios (e.g. via ``@pytest.mark.skip``, a ``@skip`` tag in the feature file, or a skip raised in a step) are now reported in the cucumber json output instead of being omitted.
 
 Security
 ++++++++
