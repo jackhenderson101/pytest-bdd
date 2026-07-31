@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
-from collections.abc import Coroutine, Iterator
+from collections.abc import Callable, Coroutine, Iterator
 from typing import Any, TypeVar
 
 import pytest
@@ -64,9 +64,62 @@ class BackgroundLoop:
             raise TimeoutError(f"coroutine did not finish within {timeout}s") from None
 
     def call_soon(self, callback: Any, *args: Any) -> None:
-        """Run a plain (non-async) callback on the loop thread."""
+        """Run a plain (non-async) callback on the loop thread, fire-and-forget.
+
+        Nothing is reported back: if *callback* raises, the loop's exception
+        handler picks it up and the fixture fails the test at teardown. Use
+        :meth:`submit_sync` when you want the return value or the exception.
+        """
         self._check_open(None)
         self._loop.call_soon_threadsafe(callback, *args)
+
+    def submit_sync(self, fn: Callable[..., T], *args: Any) -> concurrent.futures.Future[T]:
+        """Schedule the *plain* function *fn* on the loop thread.
+
+        Returns a future carrying ``fn``'s return value (or its exception).
+        Pass keyword arguments with :func:`functools.partial`.
+
+        ``fn`` runs directly in the loop's callback queue rather than as a
+        task, so it blocks the loop for its whole duration and is not swept up
+        by the teardown cancellation. Keep it short; for anything genuinely
+        blocking use ``loop.run_in_executor`` from inside a coroutine instead.
+        """
+        self._check_open(None)
+        future: concurrent.futures.Future[T] = concurrent.futures.Future()
+
+        def _runner() -> None:
+            if not future.set_running_or_notify_cancel():
+                return  # cancelled before it got a chance to start
+            try:
+                result = fn(*args)
+            except BaseException as exc:
+                # Hand the error to the caller via the future; deliberately not
+                # re-raised, so the loop's exception handler stays quiet.
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+
+        try:
+            self._loop.call_soon_threadsafe(_runner)
+        except RuntimeError:
+            # The loop closed between the check above and the call.
+            future.cancel()
+            raise RuntimeError("background event loop has already been shut down") from None
+        return future
+
+    def run_sync(self, fn: Callable[..., T], *args: Any, timeout: float | None = None) -> T:
+        """Schedule *fn* on the loop thread and block until it returns.
+
+        Re-raises whatever ``fn`` raised. On timeout, ``TimeoutError`` is
+        raised; note that a callback which has already started cannot be
+        cancelled and will keep running (and keep blocking the loop).
+        """
+        future = self.submit_sync(fn, *args)
+        try:
+            return future.result(timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise TimeoutError(f"callback did not finish within {timeout}s") from None
 
     def _check_open(self, coro: Coroutine[Any, Any, Any] | None) -> None:
         if self._closed or self._loop.is_closed():

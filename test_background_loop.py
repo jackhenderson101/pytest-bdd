@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import threading
 import time
 
@@ -61,6 +62,76 @@ def test_call_soon_runs_sync_callback(background_loop: BackgroundLoop) -> None:
     assert seen.wait(1)
 
 
+def test_run_sync_returns_the_value_from_the_loop_thread(background_loop: BackgroundLoop) -> None:
+    def where(prefix: str) -> tuple[str, int]:
+        return prefix, threading.get_ident()
+
+    label, ident = background_loop.run_sync(where, "loop", timeout=1)
+    assert label == "loop"
+    assert ident != threading.get_ident()
+
+
+def test_run_sync_takes_kwargs_via_partial(background_loop: BackgroundLoop) -> None:
+    def add(a: int, b: int = 0) -> int:
+        return a + b
+
+    assert background_loop.run_sync(functools.partial(add, 1, b=2), timeout=1) == 3
+
+
+def test_run_sync_propagates_exceptions(background_loop: BackgroundLoop) -> None:
+    def boom() -> None:
+        raise ValueError("sync kaboom")
+
+    with pytest.raises(ValueError, match="sync kaboom"):
+        background_loop.run_sync(boom, timeout=1)
+
+
+def test_submit_sync_is_non_blocking(background_loop: BackgroundLoop) -> None:
+    release = threading.Event()
+
+    def waits() -> str:
+        release.wait(5)
+        return "released"
+
+    future = background_loop.submit_sync(waits)
+    assert not future.done()  # returned without waiting for the callback
+    release.set()
+    assert future.result(5) == "released"
+
+
+def test_run_sync_times_out_on_a_blocking_callback(background_loop: BackgroundLoop) -> None:
+    release = threading.Event()
+
+    def blocks() -> None:
+        release.wait(5)
+
+    try:
+        with pytest.raises(TimeoutError):
+            background_loop.run_sync(blocks, timeout=0.05)
+    finally:
+        # The callback is already running and cannot be cancelled: let it go,
+        # otherwise it blocks the loop through teardown.
+        release.set()
+
+
+def test_submit_sync_callback_errors_do_not_fail_teardown(pytester: pytest.Pytester) -> None:
+    pytester.makeconftest("from background_loop import background_loop  # noqa: F401")
+    pytester.makepyfile(
+        """
+        import pytest
+
+        def test_error_arrives_on_the_future(background_loop):
+            def boom():
+                raise ValueError("handled here")
+            future = background_loop.submit_sync(boom)
+            with pytest.raises(ValueError, match="handled here"):
+                future.result(1)
+        """
+    )
+    result = pytester.runpytest("-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1, errors=0)
+
+
 def test_teardown_cancels_pending_tasks_and_rejects_new_work(pytester: pytest.Pytester) -> None:
     pytester.makeconftest("from background_loop import background_loop  # noqa: F401")
     pytester.makepyfile(
@@ -77,6 +148,8 @@ def test_teardown_cancels_pending_tasks_and_rejects_new_work(pytester: pytest.Py
         def test_loop_is_unusable_afterwards():
             with pytest.raises(RuntimeError, match="already been shut down"):
                 handle.submit(asyncio.sleep(0))
+            with pytest.raises(RuntimeError, match="already been shut down"):
+                handle.submit_sync(lambda: None)
         """
     )
     result = pytester.runpytest("-p", "no:cacheprovider")
